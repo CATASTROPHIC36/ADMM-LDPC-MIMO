@@ -1,0 +1,46 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+
+# Pytest
+.pytest_cache/
+*.pytest_cache
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data & output files (large files)
+data/*.npy
+data/*.mat
+data/*.h5
+data/*.csv
+*.log
+
+# Model checkpoints (can be large)
+*.pth
+*.pt
+*.ckpt

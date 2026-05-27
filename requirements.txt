@@ -1,0 +1,16 @@
+# ADMM-LDPC-MIMO — Python Dependencies
+# Install: pip install -r requirements.txt
+
+# Core scientific computing
+numpy>=1.21
+scipy>=1.7
+matplotlib>=3.5
+
+# Interactive visualizer (Streamlit app)
+streamlit>=1.20
+plotly>=5.10
+pandas>=1.4
+
+# Deep unfolding (optional — install separately if needed)
+# pip install torch
+# torch>=2.0

@@ -1,0 +1,25 @@
+[FORMAT]
+max-line-length=150
+
+[MESSAGES CONTROL]
+disable=
+    invalid-name,
+    too-many-locals,
+    too-many-arguments,
+    wrong-import-position,
+    wrong-import-order,
+    missing-function-docstring,
+    missing-module-docstring,
+    unused-variable,
+    redefined-outer-name,
+    multiple-statements,
+    superfluous-parens,
+    import-outside-toplevel,
+    multiple-imports,
+    unused-import,
+    pointless-string-statement,
+    anomalous-backslash-in-string,
+    no-else-return,
+    f-string-without-interpolation,
+    not-callable,
+    too-many-positional-arguments
