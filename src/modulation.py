@@ -157,8 +157,10 @@ def bpsk_llr(
     y_eq: np.ndarray,
     sigma2_eq: float
 ) -> np.ndarray:
-
-    return -4.0 * np.real(y_eq) / sigma2_eq
+    """Computes BPSK LLR = log(P(b=0|y)/P(b=1|y)) = 2*Re(y)/sigma2_eq.
+    Convention: bit 0 -> symbol +1, bit 1 -> symbol -1.
+    """
+    return 2.0 * np.real(y_eq) / sigma2_eq
 
 def mmse_equalize_per_stream(
     y: np.ndarray,
@@ -202,6 +204,7 @@ def compute_llrs_mmse(
 
         if M == 2:
             llrs[k] = bpsk_llr(np.array([y_eq_k]), sigma2_eq_k)[0]
+            llrs[k] = 2.0 * np.real(y_eq_k) / sigma2_eq_k
         else:
 
             stream_llrs = compute_llrs_qam(

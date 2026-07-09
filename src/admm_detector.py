@@ -51,10 +51,13 @@ def soft_project_bpsk(
     llr_prior: np.ndarray,
     rho: float
 ) -> np.ndarray:
-    """Performs soft projection for BPSK using prior LLR information."""
+    """Soft z-update for BPSK ADMM with decoder prior LLRs.
 
-    v_eff = rho * v + llr_prior / 2.0
-    return np.where(v_eff >= 0, 1.0, -1.0)
+    Solves: min_{z in {-1,+1}} rho/2*(z-v)^2 - log p(z|prior)
+    Solution: z* = sign(rho*v + llr_prior/2)  [MAP over BPSK]
+    """
+    combined = rho * v + 0.5 * llr_prior
+    return np.where(combined >= 0, 1.0, -1.0)
 
 # ==============================================================================
 # ADMM CORE DETECTION
@@ -120,43 +123,45 @@ def admm_detect(
 
         u = u + x - z
 
-    z_soft = x if return_soft else None
-    return z, z_soft
+    if return_soft:
+        return z, v
+    return z, None
 
 # ==============================================================================
 # SOFT LLR COMPUTATION
 # ==============================================================================
 
-def admm_llrs(
-    z_soft: np.ndarray,
-    sigma2_eff: float,
-    M: int = 2
-) -> np.ndarray:
-    """Computes approximate Log-Likelihood Ratios (LLRs) from ADMM soft outputs."""
-
-    from src.modulation import compute_llrs_qam
-
-    Nt = z_soft.shape[0]
-
+def admm_llrs(v_soft: np.ndarray, rho: float, M: int = 2) -> np.ndarray:
+    """
+    Computes LLRs from ADMM continuous variable v = x + u.
+    The quadratic penalty rho/2 * ||z - v||^2 acts as a Gaussian likelihood
+    for z with mean v and variance 1/rho.
+    Thus the log-likelihood ratio for BPSK (z in {-1, 1}) is exactly 2 * rho * Re(v).
+    """
     if M == 2:
-
-        return 2.0 * np.real(z_soft) / sigma2_eff
+        return 2.0 * rho * np.real(v_soft)
     else:
-        return compute_llrs_qam(z_soft, sigma2_eff, M=M)
+        raise NotImplementedError("LLRs for QAM not fully implemented here.")
 
 def admm_effective_sigma2(
     H: np.ndarray,
     sigma2: float,
     rho: float
 ) -> float:
-    """Estimates the effective noise variance after ADMM iterations."""
+    """Estimates the effective per-stream noise variance of the ADMM x-update.
 
+    At ADMM convergence, x_hat = x_true + A^{-1} H^H n / sigma2
+    where A = H^H H / sigma2 + rho * I.
+    Effective noise covariance: C = A^{-1} (H^H H / sigma2) (A^{-1})^H
+    Scalar approximation: sigma2_eff = trace(C) / Nt
+    """
     Nr, Nt = H.shape
     HH     = H.conj().T @ H
     A_inv  = np.linalg.inv(HH / sigma2 + rho * np.eye(Nt))
 
-    mid    = A_inv @ (HH / sigma2)
-    sigma2_eff = float(np.real(sigma2 * np.trace(mid @ mid.T.conj()) / Nt))
+    # C = A_inv @ (HH/sigma2) @ A_inv^H  (noise propagation formula)
+    C = A_inv @ (HH / sigma2) @ A_inv.conj().T
+    sigma2_eff = float(np.real(np.trace(C)) / Nt)
     return max(sigma2_eff, 1e-9)
 
 # ==============================================================================

@@ -247,7 +247,9 @@ def run_idd_iterations(Nr, Nt, n_ldpc, rate, idd_iters, admm_iter, bp_iter,
             HH = H_t.conj().T @ H_t
             A = HH / s2_t + rho_t * np.eye(Nt)
             A_inv = np.linalg.inv(A)
-            s2_eff = np.maximum(np.real(np.diag(A_inv)), 1e-9)
+            # Correct per-stream effective noise: C = A_inv @ (HH/s2) @ A_inv^H
+            C = A_inv @ (HH / s2_t) @ A_inv.conj().T
+            s2_eff = np.maximum(np.real(np.diag(C)), 1e-9)
             llr = np.clip(2.0 * np.real(x_soft) / s2_eff, -LLR_CLIP, LLR_CLIP)
             llr_det[t*Nt:(t+1)*Nt] = llr
 

@@ -4,19 +4,21 @@ import numpy as np
 from typing import Tuple, Optional
 
 def make_ldpc_matrix(n: int = 648, rate: float = 0.5, seed: int = 0) -> np.ndarray:
-
     rng = np.random.default_rng(seed)
-    m   = int(n * (1 - rate))
+    m = int(n * (1 - rate))
+    k = n - m
+    
+    # Create a sparse P matrix (k columns, m rows)
+    # To keep the LDPC graph sparse, we give each column of P weight d_v = 3
+    P = np.zeros((m, k), dtype=np.int8)
     d_v = 3
-    d_c = d_v * n // m
-
-    H = np.zeros((m, n), dtype=np.int8)
-
-    for v in range(n):
-
+    for v in range(k):
         rows = rng.choice(m, size=d_v, replace=False)
-        H[rows, v] = 1
-
+        P[rows, v] = 1
+        
+    # H = [P | I]
+    I = np.eye(m, dtype=np.int8)
+    H = np.hstack((P, I))
     return H
 
 def load_or_build_ldpc(
@@ -39,58 +41,15 @@ def load_or_build_ldpc(
     return H
 
 def ldpc_encode(u: np.ndarray, H: np.ndarray) -> np.ndarray:
-
     m, n = H.shape
-    k    = n - m
+    k = n - m
     assert len(u) == k, f"Expected {k} message bits, got {len(u)}"
-
-    H_work    = H.astype(np.int8).copy()
-    col_order = list(range(n))
-
-    pivot_cols = []
-    pivot_row  = 0
-
-    for col in range(n):
-        if pivot_row >= m:
-            break
-
-        found = None
-        for row in range(pivot_row, m):
-            if H_work[row, col] == 1:
-                found = row
-                break
-        if found is None:
-            continue
-
-        H_work[[pivot_row, found]] = H_work[[found, pivot_row]]
-
-        for row in range(m):
-            if row != pivot_row and H_work[row, col] == 1:
-                H_work[row] = (H_work[row] + H_work[pivot_row]) % 2
-        pivot_cols.append(col)
-        pivot_row += 1
-
-    if len(pivot_cols) < m:
-
-        p = np.zeros(m, dtype=np.int8)
-        c = np.concatenate([u.astype(np.int8), p])
-        syndrome = (H.astype(int) @ c.astype(int)) % 2
-        for i, s in enumerate(syndrome):
-            if s:
-                c[k + i] ^= 1
-        return c
-
-    parity_set = set(pivot_cols)
-    sys_cols   = [col for col in range(n) if col not in parity_set]
-
-    T = H_work[:, sys_cols].astype(int)
-    p = (T @ u.astype(int)) % 2
-
-    c = np.zeros(n, dtype=np.int8)
-    for i, sc in enumerate(sys_cols):
-        c[sc] = int(u[i])
-    for i, pc in enumerate(pivot_cols):
-        c[pc] = int(p[i])
+    
+    # H is [P | I], so P is the first k columns of H
+    P = H[:, :k]
+    p = (P @ u) % 2
+    
+    c = np.concatenate([u, p]).astype(np.int8)
     return c
 
 def verify_codeword(c: np.ndarray, H: np.ndarray) -> bool:

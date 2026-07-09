@@ -123,29 +123,38 @@ def simulate_idd_ber(
     seed: int = 42
 ) -> dict:
     """
-    Simulates Bit Error Rate performance across different SNRs for:
-    1) MMSE + SPA
-    2) ADMM + SPA (no iterations)
-    3) ADMM IDD (iterative feedback)
+    Simulates Bit Error Rate (BER) across SNRs for:
+      1) MMSE + SPA-LDPC
+      2) ADMM + SPA-LDPC  (no turbo feedback)
+      3) ADMM-IDD          (turbo feedback across idd_iter outer iterations)
+
+    Architecture -- BICM-IDD (multi-channel-use):
+      One LDPC codeword (length n_ldpc) is transmitted over
+      T = n_ldpc // Nt independent MIMO channel uses (separate H per slot).
+      Each slot delivers Nt coded BPSK bits.
+      LLRs from all T slots are concatenated -> LDPC decoder -> extrinsic
+      feedback redistributed per slot for the next IDD iteration.
+
+    This properly decouples n_ldpc from Nt so that a full-length LDPC code
+    (>= 600 bits) can be used regardless of the antenna count.
     """
-    from src.channel    import generate_channel, awgn_channel, mmse_detect
-    from src.ldpc       import (make_ldpc_matrix, ldpc_encode, verify_codeword,
+    from src.channel    import generate_channel, awgn_channel
+    from src.ldpc       import (make_ldpc_matrix, ldpc_encode,
                                 spa_decode_soft, build_tanner_graph)
     from src.admm_detector import (admm_detect, admm_llrs,
                                    admm_effective_sigma2)
+    from src.modulation import compute_llrs_mmse
 
-    rng    = np.random.default_rng(seed)
-    m      = int(n_ldpc * (1 - rate))
-    k      = n_ldpc - m
-
-    assert n_ldpc == Nt, (
-        f"For this single-channel-use IDD demo, n_ldpc ({n_ldpc}) must equal "
-        f"Nt ({Nt}).  For larger codes, use BICM (Day 8)."
+    assert n_ldpc % Nt == 0, (
+        f"n_ldpc ({n_ldpc}) must be divisible by Nt ({Nt})."
     )
+    T   = n_ldpc // Nt          # channel-use slots per codeword
+    m   = int(n_ldpc * (1 - rate))
+    k   = n_ldpc - m
 
-    H_ldpc = make_ldpc_matrix(n=n_ldpc, rate=rate, seed=0)
+    rng     = np.random.default_rng(seed)
+    H_ldpc  = make_ldpc_matrix(n=n_ldpc, rate=rate, seed=0)
     vn_to_cn, cn_to_vn = build_tanner_graph(H_ldpc)
-
     sys_cols = list(range(k))
 
     results = {
@@ -163,54 +172,78 @@ def simulate_idd_ber(
 
         for _ in range(n_trials):
 
-            u    = rng.integers(0, 2, size=k)
-            c    = ldpc_encode(u, H_ldpc)
+            # -- encode -------------------------------------------------------
+            u     = rng.integers(0, 2, size=k)
+            c     = ldpc_encode(u, H_ldpc)
+            x_all = (1.0 - 2.0 * c.astype(float)).reshape(T, Nt)
 
-            x    = 1.0 - 2.0 * c.astype(float)
+            # -- generate T independent channels ------------------------------
+            channels = []
+            for t in range(T):
+                H_t       = generate_channel(Nr, Nt, seed=None)
+                y_t, s2_t = awgn_channel(H_t, x_all[t], snr_db, rng)
+                # Adaptive rho based on noise variance (matches app.py)
+                rho_t     = min(1.0 / max(s2_t, 1e-6), 50.0)
+                s2_eff_t  = admm_effective_sigma2(H_t, s2_t, rho_t)
+                channels.append((H_t, y_t, s2_t, s2_eff_t, rho_t))
 
-            H    = generate_channel(Nr, Nt, seed=None)
-            y, s2 = awgn_channel(H, x, snr_db, rng)
-            s2_eff = admm_effective_sigma2(H, s2, rho)
-
-            x_mmse   = mmse_detect(y, H, s2)
-
-            llr_mmse = 2.0 * np.real(x_mmse) / s2_eff
-            llr_mmse = clip_llrs(llr_mmse)
+            # -- 1) MMSE + SPA ------------------------------------------------
+            llr_mmse_all = np.empty(n_ldpc)
+            for t, (H_t, y_t, s2_t, _, _) in enumerate(channels):
+                llr_t = compute_llrs_mmse(y_t, H_t, s2_t, M=2)
+                llr_mmse_all[t*Nt:(t+1)*Nt] = llr_t
+            llr_mmse_all = clip_llrs(llr_mmse_all)
             b_mmse, _, _, _ = spa_decode_soft(
-                llr_mmse, H_ldpc, max_iter=bp_iter,
+                llr_mmse_all, H_ldpc, max_iter=bp_iter,
                 vn_to_cn=vn_to_cn, cn_to_vn=cn_to_vn
             )
             err_mmse += int(np.sum(b_mmse[sys_cols] != u))
 
-            z_hard, z_soft = admm_detect(
-                y, H, s2, M=2, rho=rho,
-                max_iter=admm_iter, return_soft=True
-            )
-            llr_admm = clip_llrs(admm_llrs(z_soft, s2_eff, M=2))
+            # -- 2) ADMM + SPA (no feedback) ----------------------------------
+            llr_admm_all = np.empty(n_ldpc)
+            for t, (H_t, y_t, s2_t, s2_eff_t, rho_t) in enumerate(channels):
+                _, z_soft = admm_detect(
+                    y_t, H_t, s2_t, M=2, rho=rho_t,
+                    max_iter=admm_iter, return_soft=True
+                )
+                llr_t = admm_llrs(z_soft, rho_t, M=2)
+                llr_admm_all[t*Nt:(t+1)*Nt] = llr_t
+            llr_admm_all = clip_llrs(llr_admm_all)
             b_admm, _, _, _ = spa_decode_soft(
-                llr_admm, H_ldpc, max_iter=bp_iter,
+                llr_admm_all, H_ldpc, max_iter=bp_iter,
                 vn_to_cn=vn_to_cn, cn_to_vn=cn_to_vn
             )
             err_admm += int(np.sum(b_admm[sys_cols] != u))
 
-            llr_prior = np.zeros(Nt)
+            # -- 3) ADMM-IDD (turbo feedback) ---------------------------------
+            llr_prior_all = np.zeros(n_ldpc)   # extrinsic from decoder → detector
+            IDD_DAMP = 0.75  # Damping factor to prevent positive feedback instability
 
             for _t in range(idd_iter):
-                prior_in = llr_prior if _t > 0 else None
-                _, z_soft = admm_detect(
-                    y, H, s2, M=2, rho=rho,
-                    max_iter=admm_iter,
-                    llr_prior=prior_in,
-                    return_soft=True
-                )
-                llr_det = clip_llrs(admm_llrs(z_soft, s2_eff, M=2))
-                llr_ext_det = clip_llrs(llr_det - llr_prior)
+                # detector pass: collect channel LLRs across all T slots
+                llr_det_all = np.empty(n_ldpc)
+                for t, (H_t, y_t, s2_t, s2_eff_t, rho_t) in enumerate(channels):
+                    prior_t = llr_prior_all[t*Nt:(t+1)*Nt] if _t > 0 else None
+                    _, z_soft = admm_detect(
+                        y_t, H_t, s2_t, M=2, rho=rho_t,
+                        max_iter=admm_iter,
+                        llr_prior=prior_t,
+                        return_soft=True
+                    )
+                    llr_det_all[t*Nt:(t+1)*Nt] = admm_llrs(z_soft, rho_t, M=2)
 
+                llr_det_all = clip_llrs(llr_det_all)
+                # ADMM LLR (2*rho*v) is natively extrinsic; no need to subtract prior!
+                llr_ext_det = llr_det_all
+
+                # decoder pass
                 b_idd, llr_dec, _, _ = spa_decode_soft(
                     llr_ext_det, H_ldpc, max_iter=bp_iter,
                     vn_to_cn=vn_to_cn, cn_to_vn=cn_to_vn
                 )
-                llr_prior = clip_llrs(llr_dec - llr_ext_det)
+                # extrinsic from decoder -> fed back to detector
+                if _t < idd_iter - 1:
+                    llr_prior_all = IDD_DAMP * clip_llrs(llr_dec - llr_ext_det)
 
             err_idd += int(np.sum(b_idd[sys_cols] != u))
             total   += k
@@ -227,4 +260,3 @@ def simulate_idd_ber(
         )
 
     return results
-
